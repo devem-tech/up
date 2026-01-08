@@ -34,7 +34,7 @@ func main() {
 	flag.BoolVar(&cfg.cleanup, "cleanup", false, "Remove old images for updated containers")
 	flag.BoolVar(&cfg.labelEnable, "label-enable", false, "Update only containers that have label key=value")
 
-	flag.StringVar(&cfg.labelKey, "label-key", "devem.tech/up.enabled", "Label key to match (used with --label-enable)")
+	flag.StringVar(&cfg.labelKey, "label-key", "devem.tech/up-to-date.enabled", "Label key to match (used with --label-enable)")
 	flag.StringVar(&cfg.labelValue, "label-value", "true", "Label value to match (used with --label-enable)")
 
 	flag.StringVar(&cfg.dockerConfigPath, "docker-config", "/config.json", "Path to docker config.json for registry auth (optional)")
@@ -55,7 +55,7 @@ func main() {
 	}
 
 	log.Printf(
-		"up started: interval=%s cleanup=%v label-enable=%v label=%s=%s",
+		"up-to-date started: interval=%s cleanup=%v label-enable=%v label=%s=%s",
 		cfg.interval, cfg.cleanup, cfg.labelEnable, cfg.labelKey, cfg.labelValue,
 	)
 

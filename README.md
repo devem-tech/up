@@ -1,6 +1,6 @@
-# 🚀 up
+# 🚀 up-to-date
 
-`up` is a minimal Docker container auto-updater inspired by watchtower.
+`up-to-date` is a minimal Docker container auto-updater inspired by watchtower.
 
 It periodically checks running containers, pulls their images, and recreates containers
 when a new image version is available.
@@ -30,7 +30,7 @@ when a new image version is available.
 To enable updates for a container, add a label:
 
 ```yaml
-devem.tech/up.enabled: "true"
+devem.tech/up-to-date.enabled: "true"
 ```
 
 Only containers with this label are managed when `--label-enable` is set.
@@ -41,8 +41,8 @@ Only containers with this label are managed when `--label-enable` is set.
 
 ```yaml
 services:
-  up:
-    image: ghcr.io/devem-tech/up:latest
+  up-to-date:
+    image: ghcr.io/devem-tech/up-to-date:latest
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -51,7 +51,7 @@ services:
       - --interval=30s
       - --label-enable
       - --cleanup
-      - --label-key=devem.tech/up.enabled
+      - --label-key=devem.tech/up-to-date.enabled
       - --label-value=true
       - --docker-config=/config.json
 ```
