@@ -1,15 +1,11 @@
-# 🚀 up
+# 🔄 up-to-date
 
-`up` is a minimal Docker container auto-updater inspired by watchtower.
-
-It periodically checks running containers, pulls their images, and recreates containers
-when a new image version is available.
+Automatically keep your Docker containers updated with the latest images from registries. `up-to-date` periodically checks for new image versions and updates containers only when the image actually changes, preserving all container configuration and avoiding unnecessary restarts. Unlike aggressive auto-update solutions, it gives you full control over which containers get updated.
 
 ✨ **Key features**
-- 🏷️ Updates only labeled containers
-- 🧹 Safe image cleanup (removes only the old image of an updated container)
-- 🐳 Designed to run locally or inside Docker
-- 🔒 Predictable and minimal behavior
+- 🏷️ Selective updates
+- 🔁 Smart change detection
+- 🧹 Automatic cleanup
 
 ---
 
@@ -30,7 +26,7 @@ when a new image version is available.
 To enable updates for a container, add a label:
 
 ```yaml
-devem.tech/up.enabled: "true"
+devem.tech/up-to-date.enabled: "true"
 ```
 
 Only containers with this label are managed when `--label-enable` is set.
@@ -41,8 +37,8 @@ Only containers with this label are managed when `--label-enable` is set.
 
 ```yaml
 services:
-  up:
-    image: ghcr.io/devem-tech/up:latest
+  up-to-date:
+    image: ghcr.io/devem-tech/up-to-date:latest
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -51,7 +47,7 @@ services:
       - --interval=30s
       - --label-enable
       - --cleanup
-      - --label-key=devem.tech/up.enabled
+      - --label-key=devem.tech/up-to-date.enabled
       - --label-value=true
       - --docker-config=/config.json
 ```
@@ -72,7 +68,6 @@ services:
 ## 🔐 Registry authentication
 
 If your images are private, mount Docker's `config.json` and pass `--docker-config`.
-If the file is missing or invalid, `up` will continue without registry auth.
 
 ---
 

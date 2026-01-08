@@ -1,4 +1,4 @@
-module github.com/devem-tech/up
+module github.com/devem-tech/up-to-date
 
 go 1.25
 
