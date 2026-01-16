@@ -25,6 +25,9 @@ type config struct {
 	labelValue  string
 
 	dockerConfigPath string // путь до config.json для registry auth (опционально)
+
+	rollingLabelKey   string
+	rollingLabelValue string
 }
 
 func main() {
@@ -38,6 +41,9 @@ func main() {
 	flag.StringVar(&cfg.labelValue, "label-value", "true", "Label value to match (used with --label-enable)")
 
 	flag.StringVar(&cfg.dockerConfigPath, "docker-config", "/config.json", "Path to docker config.json for registry auth (optional)")
+
+	flag.StringVar(&cfg.rollingLabelKey, "rolling-label-key", "devem.tech/up-to-date.rolling", "Label key to enable rolling updates for a container")
+	flag.StringVar(&cfg.rollingLabelValue, "rolling-label-value", "true", "Label value to enable rolling updates (used with --rolling-label-key)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -55,8 +61,8 @@ func main() {
 	}
 
 	log.Printf(
-		"up-to-date started: interval=%s cleanup=%v label-enable=%v label=%s=%s",
-		cfg.interval, cfg.cleanup, cfg.labelEnable, cfg.labelKey, cfg.labelValue,
+		"up-to-date started: interval=%s cleanup=%v label-enable=%v label=%s=%s rolling-label=%s=%s",
+		cfg.interval, cfg.cleanup, cfg.labelEnable, cfg.labelKey, cfg.labelValue, cfg.rollingLabelKey, cfg.rollingLabelValue,
 	)
 
 	runOnce(ctx, cli, auths, cfg)
@@ -90,7 +96,7 @@ func runOnce(ctx context.Context, cli *client.Client, auths dockerAuthIndex, cfg
 			name = shortName(c.Names[0])
 		}
 
-		if err := updateContainerIfNeeded(ctx, cli, auths, cfg.cleanup, c.ID); err != nil {
+		if err := updateContainerIfNeeded(ctx, cli, auths, cfg, c.ID); err != nil {
 			log.Printf("[%s] %v", name, err)
 		}
 	}
@@ -112,7 +118,7 @@ func listTargetContainers(ctx context.Context, cli *client.Client, cfg config) (
 	return res.Items, nil
 }
 
-func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dockerAuthIndex, cleanup bool, containerID string) error {
+func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dockerAuthIndex, cfg config, containerID string) error {
 	ins, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
 	if err != nil {
 		return err
@@ -153,6 +159,68 @@ func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dock
 
 	log.Printf("[%s] update available: %s -> %s (%s)", name, shortID(oldImageID), shortID(newImageID), imageRef)
 
+	if supportsRollingUpdate(cur) && hasRollingLabel(cur, cfg.rollingLabelKey, cfg.rollingLabelValue) {
+		if err := rollingUpdateContainer(ctx, cli, cur, imageRef); err != nil {
+			return fmt.Errorf("rolling update: %w", err)
+		}
+	} else {
+		if err := recreateContainer(ctx, cli, cur, imageRef); err != nil {
+			return err
+		}
+	}
+
+	if cfg.cleanup {
+		log.Printf("[%s] cleanup enabled: checking old image %s", name, shortID(oldImageID))
+		removed, reason, err := cleanupOldImageIfUnused(ctx, cli, oldImageID)
+		if err != nil {
+			log.Printf("[%s] cleanup error for %s: %v", name, shortID(oldImageID), err)
+		} else if removed {
+			log.Printf("[%s] cleanup: removed old image %s (%s)", name, shortID(oldImageID), reason)
+		} else {
+			log.Printf("[%s] cleanup: skipped old image %s (%s)", name, shortID(oldImageID), reason)
+		}
+	} else {
+		log.Printf("[%s] cleanup disabled: keeping old image %s", name, shortID(oldImageID))
+	}
+
+	return nil
+}
+
+func supportsRollingUpdate(cur container.InspectResponse) bool {
+	if cur.HostConfig == nil {
+		return true
+	}
+	if cur.HostConfig.NetworkMode == "host" {
+		return false
+	}
+	if cur.HostConfig.PublishAllPorts {
+		return false
+	}
+	if len(cur.HostConfig.PortBindings) > 0 {
+		return false
+	}
+	return true
+}
+
+func hasRollingLabel(cur container.InspectResponse, key, value string) bool {
+	if cur.Config == nil || cur.Config.Labels == nil {
+		return false
+	}
+	if key == "" {
+		return false
+	}
+	got, ok := cur.Config.Labels[key]
+	if !ok {
+		return false
+	}
+	if value == "" {
+		return true
+	}
+	return got == value
+}
+
+func recreateContainer(ctx context.Context, cli *client.Client, cur container.InspectResponse, imageRef string) error {
+	name := shortName(cur.Name)
 	fullName := strings.TrimPrefix(cur.Name, "/")
 	netCfg := buildNetworkingConfig(cur)
 
@@ -160,12 +228,12 @@ func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dock
 	newConfig.Image = imageRef
 
 	log.Printf("[%s] stopping container", name)
-	if _, err := cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); err != nil {
+	if _, err := cli.ContainerStop(ctx, cur.ID, client.ContainerStopOptions{}); err != nil {
 		return fmt.Errorf("stop: %w", err)
 	}
 
 	log.Printf("[%s] removing container", name)
-	if _, err := cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{
+	if _, err := cli.ContainerRemove(ctx, cur.ID, client.ContainerRemoveOptions{
 		Force:         false,
 		RemoveVolumes: false,
 	}); err != nil {
@@ -192,22 +260,103 @@ func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dock
 	}
 
 	log.Printf("[%s] updated successfully", name)
+	return nil
+}
 
-	if cleanup {
-		log.Printf("[%s] cleanup enabled: checking old image %s", name, shortID(oldImageID))
-		removed, reason, err := cleanupOldImageIfUnused(ctx, cli, oldImageID)
-		if err != nil {
-			log.Printf("[%s] cleanup error for %s: %v", name, shortID(oldImageID), err)
-		} else if removed {
-			log.Printf("[%s] cleanup: removed old image %s (%s)", name, shortID(oldImageID), reason)
-		} else {
-			log.Printf("[%s] cleanup: skipped old image %s (%s)", name, shortID(oldImageID), reason)
-		}
-	} else {
-		log.Printf("[%s] cleanup disabled: keeping old image %s", name, shortID(oldImageID))
+func rollingUpdateContainer(ctx context.Context, cli *client.Client, cur container.InspectResponse, imageRef string) error {
+	name := shortName(cur.Name)
+	fullName := strings.TrimPrefix(cur.Name, "/")
+	netCfg := buildNetworkingConfig(cur)
+
+	newConfig := cur.Config
+	newConfig.Image = imageRef
+
+	tempName := fmt.Sprintf("%s.updating-%d", fullName, time.Now().UnixNano())
+	log.Printf("[%s] creating new container %s", name, tempName)
+	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config:           newConfig,
+		HostConfig:       cur.HostConfig,
+		NetworkingConfig: netCfg,
+		Name:             tempName,
+	})
+	if err != nil {
+		return fmt.Errorf("create: %w", err)
+	}
+	if len(created.Warnings) > 0 {
+		log.Printf("[%s] create warnings: %v", name, created.Warnings)
 	}
 
+	log.Printf("[%s] starting new container %s", name, tempName)
+	if _, err := cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
+		_, _ = cli.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true})
+		return fmt.Errorf("start: %w", err)
+	}
+
+	if err := waitForHealthyIfConfigured(ctx, cli, created.ID, 30*time.Second); err != nil {
+		_, _ = cli.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true})
+		return fmt.Errorf("health check: %w", err)
+	}
+
+	log.Printf("[%s] stopping old container", name)
+	if _, err := cli.ContainerStop(ctx, cur.ID, client.ContainerStopOptions{}); err != nil {
+		return fmt.Errorf("stop old: %w", err)
+	}
+
+	log.Printf("[%s] removing old container", name)
+	if _, err := cli.ContainerRemove(ctx, cur.ID, client.ContainerRemoveOptions{
+		Force:         false,
+		RemoveVolumes: false,
+	}); err != nil {
+		return fmt.Errorf("remove old: %w", err)
+	}
+
+	log.Printf("[%s] renaming new container to %s", name, fullName)
+	if _, err := cli.ContainerRename(ctx, created.ID, client.ContainerRenameOptions{NewName: fullName}); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+
+	log.Printf("[%s] updated successfully", name)
 	return nil
+}
+
+func waitForHealthyIfConfigured(ctx context.Context, cli *client.Client, containerID string, timeout time.Duration) error {
+	ins, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return err
+	}
+	cur := ins.Container
+	if cur.Config == nil || cur.Config.Healthcheck == nil {
+		return nil
+	}
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("timeout waiting for healthy")
+		case <-ticker.C:
+			ins, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+			if err != nil {
+				return err
+			}
+			cur := ins.Container
+			if cur.State == nil || cur.State.Health == nil {
+				return nil
+			}
+			switch cur.State.Health.Status {
+			case container.Healthy:
+				return nil
+			case container.Unhealthy:
+				return fmt.Errorf("container reported unhealthy")
+			}
+		}
+	}
 }
 
 func buildNetworkingConfig(cur container.InspectResponse) *network.NetworkingConfig {

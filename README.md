@@ -31,6 +31,14 @@ devem.tech/up-to-date.enabled: "true"
 
 Only containers with this label are managed when `--label-enable` is set.
 
+To enable rolling updates (create new, then stop old), add a label:
+
+```yaml
+devem.tech/up-to-date.rolling: "true"
+```
+
+Rolling updates are only applied to containers with this label and without published ports.
+
 ---
 
 ## 🐳 Usage with Docker Compose
@@ -62,6 +70,8 @@ services:
 - `--label-value` — label value to match
 - `--cleanup` — remove the old image after a successful update
 - `--docker-config` — path to `config.json` for registry authentication
+- `--rolling-label-key` — label key to enable rolling updates
+- `--rolling-label-value` — label value to enable rolling updates
 
 ---
 
