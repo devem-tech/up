@@ -14,7 +14,13 @@ import (
 )
 
 func Run(ctx context.Context, cli *client.Client, auths dockerauth.Index, cfg Config) {
-	runOnce(ctx, cli, auths, cfg)
+	opCtx := context.WithoutCancel(ctx)
+
+	runOnce(opCtx, cli, auths, cfg)
+	if ctx.Err() != nil {
+		logf(slog.LevelInfo, "shutdown")
+		return
+	}
 
 	t := time.NewTicker(cfg.Interval)
 	defer t.Stop()
@@ -25,7 +31,11 @@ func Run(ctx context.Context, cli *client.Client, auths dockerauth.Index, cfg Co
 			logf(slog.LevelInfo, "shutdown")
 			return
 		case <-t.C:
-			runOnce(ctx, cli, auths, cfg)
+			runOnce(opCtx, cli, auths, cfg)
+			if ctx.Err() != nil {
+				logf(slog.LevelInfo, "shutdown")
+				return
+			}
 		}
 	}
 }

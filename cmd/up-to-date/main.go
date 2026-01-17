@@ -18,7 +18,7 @@ import (
 	"github.com/devem-tech/up-to-date/internal/dockerauth"
 )
 
-const appVersion = "0.3.0"
+const appVersion = "0.4.0"
 
 func main() {
 	var cfg app.Config
