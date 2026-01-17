@@ -71,15 +71,15 @@ services:
 
 ## 🔧 Configuration flags
 
-| Flag | Default | Description |
-| --- | --- | --- |
-| `--interval` | `30s` | How often to check for updates |
-| `--cleanup` | `false` | Remove old images for updated containers |
-| `--label-enable` | `false` | Update only containers that have label |
-| `--label` | `devem.tech/up-to-date.enabled=true` | Label selector for `--label-enable` (key or key=value) |
-| `--rolling-label` | `devem.tech/up-to-date.rolling=true` | Label selector to enable rolling updates (key or key=value) |
-| `--docker-config` | empty | Path to `config.json` for registry auth (optional) |
-| `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| Flag | Description |
+| --- | --- |
+| `--interval` | How often to check for updates |
+| `--cleanup` | Remove old images for updated containers |
+| `--label-enable` | Update only containers that have label |
+| `--label` | Label selector for `--label-enable` (key or key=value) |
+| `--rolling-label` | Label selector to enable rolling updates (key or key=value) |
+| `--docker-config` | Path to `config.json` for registry auth (optional) |
+| `--log-level` | Log level: `debug`, `info`, `warn`, `error` |
 
 ---
 
