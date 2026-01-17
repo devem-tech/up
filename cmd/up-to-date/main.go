@@ -12,12 +12,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/moby/moby/client"
+
 	"github.com/devem-tech/up-to-date/internal/app"
 	"github.com/devem-tech/up-to-date/internal/dockerauth"
-	"github.com/moby/moby/client"
 )
 
-const appVersion = "0.2.0"
+const appVersion = "0.3.0"
 
 func main() {
 	var cfg app.Config
@@ -89,6 +90,13 @@ func main() {
 	slog.Info("--interval=" + cfg.Interval.String())
 	slog.Info("--cleanup=" + fmt.Sprintf("%t", cfg.Cleanup))
 	slog.Info("--label-enable=" + fmt.Sprintf("%t", cfg.LabelEnable))
+
+	if notify, err := app.NewTelegramNotifierFromEnv(); err != nil {
+		slog.Warn("telegram notifications disabled", "error", err)
+	} else if notify != nil {
+		cfg.Notify = notify
+		slog.Info("telegram notifications enabled")
+	}
 
 	app.Run(ctx, cli, auths, cfg)
 }

@@ -64,7 +64,6 @@ services:
       - --interval=30s
       - --label-enable
       - --cleanup
-      - --label=devem.tech/up-to-date.enabled=true
       - --docker-config=/config.json
 ```
 
@@ -81,6 +80,20 @@ services:
 | `--rolling-label` | `devem.tech/up-to-date.rolling=true` | Label selector to enable rolling updates (key or key=value) |
 | `--docker-config` | empty | Path to `config.json` for registry auth (optional) |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+
+---
+
+## 🔔 Telegram notifications
+
+If `TELEGRAM_API_TOKEN` is set, `up-to-date` will send a Telegram message
+when updates are applied or failures occur.
+
+Required environment variables:
+
+| Variable | Description |
+| --- | --- |
+| `TELEGRAM_API_TOKEN` | Bot token |
+| `TELEGRAM_CHAT_ID` | Target chat ID |
 
 ---
 

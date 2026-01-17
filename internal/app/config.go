@@ -16,4 +16,6 @@ type Config struct {
 	RollingLabel string
 
 	LogLevel slog.Level
+
+	Notify NotifyFunc
 }
