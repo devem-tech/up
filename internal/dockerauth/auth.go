@@ -1,4 +1,4 @@
-package main
+package dockerauth
 
 import (
 	"encoding/base64"
@@ -10,26 +10,26 @@ import (
 	"github.com/moby/moby/api/types/registry"
 )
 
-type dockerAuthIndex map[string]registry.AuthConfig
+type Index map[string]registry.AuthConfig
 
-type dockerConfigFile struct {
+type configFile struct {
 	Auths map[string]struct {
 		Auth string `json:"auth"` // base64(user:pass)
 	} `json:"auths"`
 }
 
-func loadDockerConfigAuths(path string) (dockerAuthIndex, error) {
+func Load(path string) (Index, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	var cfg dockerConfigFile
+	var cfg configFile
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return nil, err
 	}
 
-	out := dockerAuthIndex{}
+	out := Index{}
 	for server, entry := range cfg.Auths {
 		if entry.Auth == "" {
 			continue
@@ -48,7 +48,7 @@ func loadDockerConfigAuths(path string) (dockerAuthIndex, error) {
 	return out, nil
 }
 
-func (idx dockerAuthIndex) registryAuthForImageRef(imageRef string) (string, bool) {
+func (idx Index) RegistryAuthForImageRef(imageRef string) (string, bool) {
 	reg := registryFromImageRef(imageRef)
 
 	// docker config часто хранит ключ "https://index.docker.io/v1/" для Docker Hub
