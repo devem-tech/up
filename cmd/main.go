@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -28,10 +28,65 @@ type config struct {
 
 	rollingLabelKey   string
 	rollingLabelValue string
+
+	logLevel slog.Level
+}
+
+const appVersion = "0.1.0"
+
+var logCtx = context.Background()
+
+func parseLogLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("unknown log level %q", s)
+	}
+}
+
+type containerRef struct {
+	Name string
+	ID   string
+}
+
+func containerRefFromSummary(c container.Summary) containerRef {
+	name := "<unknown>"
+	if len(c.Names) > 0 {
+		name = shortName(c.Names[0])
+	}
+	return containerRef{Name: name, ID: shortID(c.ID)}
+}
+
+func containerRefFromInspect(cur container.InspectResponse) containerRef {
+	return containerRef{Name: shortName(cur.Name), ID: shortID(cur.ID)}
+}
+
+func logf(lvl slog.Level, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	slog.Default().Log(logCtx, lvl, msg)
+}
+
+func logContainerf(lvl slog.Level, ref containerRef, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	attrs := []slog.Attr{slog.String("name", ref.Name)}
+	if ref.ID == "" {
+		slog.Default().LogAttrs(logCtx, lvl, msg, attrs...)
+		return
+	}
+	attrs = append(attrs, slog.String("id", ref.ID))
+	slog.Default().LogAttrs(logCtx, lvl, msg, attrs...)
 }
 
 func main() {
 	var cfg config
+	var logLevelStr string
 
 	flag.DurationVar(&cfg.interval, "interval", 30*time.Second, "Check interval (e.g. 30s)")
 	flag.BoolVar(&cfg.cleanup, "cleanup", false, "Remove old images for updated containers")
@@ -44,26 +99,53 @@ func main() {
 
 	flag.StringVar(&cfg.rollingLabelKey, "rolling-label-key", "devem.tech/up-to-date.rolling", "Label key to enable rolling updates for a container")
 	flag.StringVar(&cfg.rollingLabelValue, "rolling-label-value", "true", "Label value to enable rolling updates (used with --rolling-label-key)")
+	flag.StringVar(&logLevelStr, "log-level", "info", "Log level: debug, info, warn, error")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	parsedLogLevel, err := parseLogLevel(logLevelStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "log level: %v\n", err)
+		os.Exit(2)
+	}
+	cfg.logLevel = parsedLogLevel
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: cfg.logLevel,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				if t, ok := a.Value.Any().(time.Time); ok {
+					return slog.String(slog.TimeKey, t.UTC().Format(time.RFC3339))
+				}
+			}
+			if a.Key == slog.LevelKey {
+				if lvl, ok := a.Value.Any().(slog.Level); ok {
+					return slog.String(slog.LevelKey, strings.ToLower(lvl.String()))
+				}
+			}
+			return a
+		},
+	})
+	slog.SetDefault(slog.New(handler))
+
 	cli, err := client.New(client.FromEnv)
 	if err != nil {
-		log.Fatalf("docker client: %v", err)
+		logf(slog.LevelError, "docker client: %v", err)
+		os.Exit(1)
 	}
 	defer cli.Close()
 
 	auths, err := loadDockerConfigAuths(cfg.dockerConfigPath)
 	if err != nil {
-		log.Printf("config: %v (continuing without registry auth)", err)
+		logf(slog.LevelWarn, "config: %v (continuing without registry auth)", err)
 	}
 
-	log.Printf(
-		"up-to-date started: interval=%s cleanup=%v label-enable=%v label=%s=%s rolling-label=%s=%s",
-		cfg.interval, cfg.cleanup, cfg.labelEnable, cfg.labelKey, cfg.labelValue, cfg.rollingLabelKey, cfg.rollingLabelValue,
-	)
+	logf(slog.LevelInfo, "up-to-date %s", appVersion)
+	logf(slog.LevelInfo, "--log-level=%s", strings.ToLower(cfg.logLevel.String()))
+	logf(slog.LevelInfo, "--interval=%s", cfg.interval)
+	logf(slog.LevelInfo, "--cleanup=%t", cfg.cleanup)
+	logf(slog.LevelInfo, "--label-enable=%t", cfg.labelEnable)
 
 	runOnce(ctx, cli, auths, cfg)
 
@@ -73,7 +155,7 @@ func main() {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("shutdown")
+			logf(slog.LevelInfo, "shutdown")
 			return
 		case <-t.C:
 			runOnce(ctx, cli, auths, cfg)
@@ -82,24 +164,40 @@ func main() {
 }
 
 func runOnce(ctx context.Context, cli *client.Client, auths dockerAuthIndex, cfg config) {
+	start := time.Now()
 	containers, err := listTargetContainers(ctx, cli, cfg)
 	if err != nil {
-		log.Printf("list containers error: %v", err)
+		logf(slog.LevelError, "list containers error: %v", err)
 		return
 	}
+	scanned := len(containers)
+	updated := 0
+	failed := 0
 
-	log.Printf("scan: %d container(s) eligible", len(containers))
+	logf(slog.LevelDebug, "scan: %d container(s) eligible", scanned)
 
 	for _, c := range containers {
-		name := "<unknown>"
-		if len(c.Names) > 0 {
-			name = shortName(c.Names[0])
+		ref := containerRefFromSummary(c)
+		wasUpdated, err := updateContainerIfNeeded(ctx, cli, auths, cfg, c)
+		if err != nil {
+			logContainerf(slog.LevelError, ref, "update error: %v", err)
+			failed++
+			continue
 		}
-
-		if err := updateContainerIfNeeded(ctx, cli, auths, cfg, c.ID); err != nil {
-			log.Printf("[%s] %v", name, err)
+		if wasUpdated {
+			updated++
 		}
 	}
+
+	slog.Default().LogAttrs(
+		logCtx,
+		slog.LevelInfo,
+		"session done",
+		slog.Int("scanned", scanned),
+		slog.Int("updated", updated),
+		slog.Int("failed", failed),
+		slog.Duration("duration", time.Since(start)),
+	)
 }
 
 func listTargetContainers(ctx context.Context, cli *client.Client, cfg config) ([]container.Summary, error) {
@@ -118,18 +216,19 @@ func listTargetContainers(ctx context.Context, cli *client.Client, cfg config) (
 	return res.Items, nil
 }
 
-func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dockerAuthIndex, cfg config, containerID string) error {
-	ins, err := cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dockerAuthIndex, cfg config, summary container.Summary) (bool, error) {
+	ref := containerRefFromSummary(summary)
+	ins, err := cli.ContainerInspect(ctx, summary.ID, client.ContainerInspectOptions{})
 	if err != nil {
-		return err
+		return false, fmt.Errorf("inspect container: %w", err)
 	}
 
 	cur := ins.Container
-	name := shortName(cur.Name)
+	ref = containerRefFromInspect(cur)
 
 	imageRef := cur.Config.Image
 	if imageRef == "" {
-		return errors.New("container has empty Config.Image")
+		return false, errors.New("container has empty Config.Image")
 	}
 
 	oldImageID := cur.Image
@@ -139,51 +238,50 @@ func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dock
 		}
 	}
 
-	log.Printf("[%s] checking for updates: pulling (%s)", name, imageRef)
+	logContainerf(slog.LevelDebug, ref, "checking for updates (%s)", imageRef)
 
 	regAuth, _ := auths.registryAuthForImageRef(imageRef)
 	if err := pullImage(ctx, cli, imageRef, regAuth); err != nil {
-		return fmt.Errorf("pull %q: %w", imageRef, err)
+		return false, fmt.Errorf("pull %q: %w", imageRef, err)
 	}
 
 	newImg, err := cli.ImageInspect(ctx, imageRef)
 	if err != nil {
-		return fmt.Errorf("inspect pulled image %q: %w", imageRef, err)
+		return false, fmt.Errorf("inspect pulled image %q: %w", imageRef, err)
 	}
 	newImageID := newImg.ID
 
 	if newImageID == "" || oldImageID == "" || newImageID == oldImageID {
-		log.Printf("[%s] no update (%s)", name, imageRef)
-		return nil
+		logContainerf(slog.LevelDebug, ref, "no update")
+		return false, nil
 	}
 
-	log.Printf("[%s] update available: %s -> %s (%s)", name, shortID(oldImageID), shortID(newImageID), imageRef)
+	logContainerf(slog.LevelInfo, ref, "update available %s (%s)", imageRef, shortID(newImageID))
 
 	if supportsRollingUpdate(cur) && hasRollingLabel(cur, cfg.rollingLabelKey, cfg.rollingLabelValue) {
 		if err := rollingUpdateContainer(ctx, cli, cur, imageRef); err != nil {
-			return fmt.Errorf("rolling update: %w", err)
+			return false, fmt.Errorf("rolling update: %w", err)
 		}
 	} else {
 		if err := recreateContainer(ctx, cli, cur, imageRef); err != nil {
-			return err
+			return false, err
 		}
 	}
 
 	if cfg.cleanup {
-		log.Printf("[%s] cleanup enabled: checking old image %s", name, shortID(oldImageID))
 		removed, reason, err := cleanupOldImageIfUnused(ctx, cli, oldImageID)
 		if err != nil {
-			log.Printf("[%s] cleanup error for %s: %v", name, shortID(oldImageID), err)
+			logContainerf(slog.LevelWarn, ref, "cleanup error for %s: %v", shortID(oldImageID), err)
 		} else if removed {
-			log.Printf("[%s] cleanup: removed old image %s (%s)", name, shortID(oldImageID), reason)
+			logContainerf(slog.LevelInfo, ref, "removed old image %s (%s)", shortID(oldImageID), reason)
 		} else {
-			log.Printf("[%s] cleanup: skipped old image %s (%s)", name, shortID(oldImageID), reason)
+			logContainerf(slog.LevelInfo, ref, "skipped old image %s (%s)", shortID(oldImageID), reason)
 		}
 	} else {
-		log.Printf("[%s] cleanup disabled: keeping old image %s", name, shortID(oldImageID))
+		logContainerf(slog.LevelDebug, ref, "cleanup disabled: keeping old image %s", shortID(oldImageID))
 	}
 
-	return nil
+	return true, nil
 }
 
 func supportsRollingUpdate(cur container.InspectResponse) bool {
@@ -220,19 +318,19 @@ func hasRollingLabel(cur container.InspectResponse, key, value string) bool {
 }
 
 func recreateContainer(ctx context.Context, cli *client.Client, cur container.InspectResponse, imageRef string) error {
-	name := shortName(cur.Name)
 	fullName := strings.TrimPrefix(cur.Name, "/")
 	netCfg := buildNetworkingConfig(cur)
 
 	newConfig := cur.Config
 	newConfig.Image = imageRef
 
-	log.Printf("[%s] stopping container", name)
+	refOld := containerRefFromInspect(cur)
+	logContainerf(slog.LevelInfo, refOld, "stopping container")
 	if _, err := cli.ContainerStop(ctx, cur.ID, client.ContainerStopOptions{}); err != nil {
 		return fmt.Errorf("stop: %w", err)
 	}
 
-	log.Printf("[%s] removing container", name)
+	logContainerf(slog.LevelInfo, refOld, "removing container")
 	if _, err := cli.ContainerRemove(ctx, cur.ID, client.ContainerRemoveOptions{
 		Force:         false,
 		RemoveVolumes: false,
@@ -240,7 +338,8 @@ func recreateContainer(ctx context.Context, cli *client.Client, cur container.In
 		return fmt.Errorf("remove: %w", err)
 	}
 
-	log.Printf("[%s] creating container", name)
+	refNew := containerRef{Name: fullName, ID: ""}
+	logContainerf(slog.LevelInfo, refNew, "creating container")
 	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config:           newConfig,
 		HostConfig:       cur.HostConfig,
@@ -250,29 +349,31 @@ func recreateContainer(ctx context.Context, cli *client.Client, cur container.In
 	if err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
+	refNew.ID = shortID(created.ID)
 	if len(created.Warnings) > 0 {
-		log.Printf("[%s] create warnings: %v", name, created.Warnings)
+		logContainerf(slog.LevelWarn, refNew, "create warnings: %v", created.Warnings)
 	}
 
-	log.Printf("[%s] starting container", name)
+	logContainerf(slog.LevelInfo, refNew, "starting container")
 	if _, err := cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
 
-	log.Printf("[%s] updated successfully", name)
+	logContainerf(slog.LevelInfo, refNew, "updated successfully")
 	return nil
 }
 
 func rollingUpdateContainer(ctx context.Context, cli *client.Client, cur container.InspectResponse, imageRef string) error {
-	name := shortName(cur.Name)
+	refOld := containerRefFromInspect(cur)
 	fullName := strings.TrimPrefix(cur.Name, "/")
 	netCfg := buildNetworkingConfig(cur)
 
 	newConfig := cur.Config
 	newConfig.Image = imageRef
 
-	tempName := fmt.Sprintf("%s.updating-%d", fullName, time.Now().UnixNano())
-	log.Printf("[%s] creating new container %s", name, tempName)
+	tempName := fmt.Sprintf("%s.next", fullName)
+	refNew := containerRef{Name: tempName, ID: ""}
+	logContainerf(slog.LevelInfo, refNew, "creating new container")
 	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config:           newConfig,
 		HostConfig:       cur.HostConfig,
@@ -282,11 +383,12 @@ func rollingUpdateContainer(ctx context.Context, cli *client.Client, cur contain
 	if err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
+	refNew.ID = shortID(created.ID)
 	if len(created.Warnings) > 0 {
-		log.Printf("[%s] create warnings: %v", name, created.Warnings)
+		logContainerf(slog.LevelWarn, refNew, "create warnings: %v", created.Warnings)
 	}
 
-	log.Printf("[%s] starting new container %s", name, tempName)
+	logContainerf(slog.LevelInfo, refNew, "starting new container")
 	if _, err := cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		_, _ = cli.ContainerRemove(ctx, created.ID, client.ContainerRemoveOptions{Force: true})
 		return fmt.Errorf("start: %w", err)
@@ -297,12 +399,12 @@ func rollingUpdateContainer(ctx context.Context, cli *client.Client, cur contain
 		return fmt.Errorf("health check: %w", err)
 	}
 
-	log.Printf("[%s] stopping old container", name)
+	logContainerf(slog.LevelInfo, refOld, "stopping old container")
 	if _, err := cli.ContainerStop(ctx, cur.ID, client.ContainerStopOptions{}); err != nil {
 		return fmt.Errorf("stop old: %w", err)
 	}
 
-	log.Printf("[%s] removing old container", name)
+	logContainerf(slog.LevelInfo, refOld, "removing old container")
 	if _, err := cli.ContainerRemove(ctx, cur.ID, client.ContainerRemoveOptions{
 		Force:         false,
 		RemoveVolumes: false,
@@ -310,12 +412,13 @@ func rollingUpdateContainer(ctx context.Context, cli *client.Client, cur contain
 		return fmt.Errorf("remove old: %w", err)
 	}
 
-	log.Printf("[%s] renaming new container to %s", name, fullName)
+	logContainerf(slog.LevelInfo, refNew, "renaming new container to %s", fullName)
 	if _, err := cli.ContainerRename(ctx, created.ID, client.ContainerRenameOptions{NewName: fullName}); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
 
-	log.Printf("[%s] updated successfully", name)
+	refNew.Name = fullName
+	logContainerf(slog.LevelInfo, refNew, "updated successfully")
 	return nil
 }
 
