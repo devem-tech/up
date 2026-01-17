@@ -1,11 +1,13 @@
 # 🔄 up-to-date
 
-Automatically keep your Docker containers updated with the latest images from registries. `up-to-date` periodically checks for new image versions and updates containers only when the image actually changes, preserving all container configuration and avoiding unnecessary restarts. Unlike aggressive auto-update solutions, it gives you full control over which containers get updated.
+`up-to-date` periodically scans running Docker containers, pulls their configured images, and recreates containers only when the image ID changes. It preserves the original container configuration, supports optional rolling updates for eligible containers, and lets you control exactly which containers are updated via labels.
 
 ✨ **Key features**
-- 🏷️ Selective updates
-- 🔁 Smart change detection
-- 🧹 Automatic cleanup
+- 🏷️ Selective updates via labels
+- 🔁 Smart change detection (recreate only on image ID change)
+- ♻️ Rolling updates with healthcheck awareness
+- 🧹 Optional cleanup of unused images
+- 📋 Configurable logging
 
 ---
 
@@ -17,27 +19,34 @@ Automatically keep your Docker containers updated with the latest images from re
   - ⛔ Stops the container
   - ♻️ Recreates it with the same config
   - ▶️ Starts the container
+- 🔄 If rolling updates are enabled for a container:
+  - ✅ Creates a new container first
+  - 🩺 Waits for healthcheck (if configured)
+  - ⛔ Stops and removes the old container
+  - 🔁 Renames the new container to the original name
 - 🧹 Optionally removes the previous image if it is no longer used
 
 ---
 
 ## 🏷️ Labels
 
-To enable updates for a container, add a label:
+To enable updates for a container, add a label (default selector below):
 
 ```yaml
 devem.tech/up-to-date.enabled: "true"
 ```
 
-Only containers with this label are managed when `--label-enable` is set.
+Only containers with this label are managed when `--label-enable` is set.  
+The selector can be changed with `--label`.
 
-To enable rolling updates (create new, then stop old), add a label:
+To enable rolling updates (create new, then stop old), add a label (default selector below):
 
 ```yaml
 devem.tech/up-to-date.rolling: "true"
 ```
 
-Rolling updates are only applied to containers with this label and without published ports.
+Rolling updates are only applied to containers with this label and without published ports or host networking.  
+The selector can be changed with `--rolling-label`.
 
 ---
 
@@ -63,12 +72,15 @@ services:
 
 ## 🔧 Configuration flags
 
-- `--interval` — how often to check for updates (default: `30s`)
-- `--label-enable` — update only labeled containers
-- `--label` — label selector to match (key or key=value)
-- `--cleanup` — remove the old image after a successful update
-- `--docker-config` — path to `config.json` for registry authentication
-- `--rolling-label` — label selector to enable rolling updates (key or key=value)
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--interval` | `30s` | How often to check for updates |
+| `--cleanup` | `false` | Remove old images for updated containers |
+| `--label-enable` | `false` | Update only containers that have label |
+| `--label` | `devem.tech/up-to-date.enabled=true` | Label selector for `--label-enable` (key or key=value) |
+| `--rolling-label` | `devem.tech/up-to-date.rolling=true` | Label selector to enable rolling updates (key or key=value) |
+| `--docker-config` | empty | Path to `config.json` for registry auth (optional) |
+| `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
 ---
 

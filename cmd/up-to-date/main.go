@@ -17,7 +17,7 @@ import (
 	"github.com/moby/moby/client"
 )
 
-const appVersion = "0.1.0"
+const appVersion = "0.2.0"
 
 func main() {
 	var cfg app.Config
