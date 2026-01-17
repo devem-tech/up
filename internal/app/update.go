@@ -55,7 +55,7 @@ func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dock
 
 	logContainerf(slog.LevelInfo, ref, "update available %s (%s)", imageRef, shortID(newImageID))
 
-	if supportsRollingUpdate(cur) && hasRollingLabel(cur, cfg.RollingLabelKey, cfg.RollingLabelValue) {
+	if supportsRollingUpdate(cur) && hasRollingLabel(cur, cfg.RollingLabel) {
 		if err := rollingUpdateContainer(ctx, cli, cur, imageRef); err != nil {
 			return false, fmt.Errorf("rolling update: %w", err)
 		}
@@ -97,10 +97,14 @@ func supportsRollingUpdate(cur container.InspectResponse) bool {
 	return true
 }
 
-func hasRollingLabel(cur container.InspectResponse, key, value string) bool {
+func hasRollingLabel(cur container.InspectResponse, label string) bool {
 	if cur.Config == nil || cur.Config.Labels == nil {
 		return false
 	}
+	if label == "" {
+		return false
+	}
+	key, value, hasValue := strings.Cut(label, "=")
 	if key == "" {
 		return false
 	}
@@ -108,7 +112,7 @@ func hasRollingLabel(cur container.InspectResponse, key, value string) bool {
 	if !ok {
 		return false
 	}
-	if value == "" {
+	if !hasValue || value == "" {
 		return true
 	}
 	return got == value

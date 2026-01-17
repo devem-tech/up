@@ -13,7 +13,7 @@ import (
 func listTargetContainers(ctx context.Context, cli *client.Client, cfg Config) ([]container.Summary, error) {
 	var f client.Filters
 	if cfg.LabelEnable {
-		f = make(client.Filters).Add("label", fmt.Sprintf("%s=%s", cfg.LabelKey, cfg.LabelValue))
+		f = make(client.Filters).Add("label", cfg.Label)
 	}
 
 	res, err := cli.ContainerList(ctx, client.ContainerListOptions{

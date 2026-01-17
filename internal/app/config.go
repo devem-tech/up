@@ -9,13 +9,11 @@ type Config struct {
 	Interval    time.Duration
 	Cleanup     bool
 	LabelEnable bool
-	LabelKey    string
-	LabelValue  string
+	Label       string
 
 	DockerConfigPath string // путь до config.json для registry auth (опционально)
 
-	RollingLabelKey   string
-	RollingLabelValue string
+	RollingLabel string
 
 	LogLevel slog.Level
 }

@@ -55,8 +55,7 @@ services:
       - --interval=30s
       - --label-enable
       - --cleanup
-      - --label-key=devem.tech/up-to-date.enabled
-      - --label-value=true
+      - --label=devem.tech/up-to-date.enabled=true
       - --docker-config=/config.json
 ```
 
@@ -66,12 +65,10 @@ services:
 
 - `--interval` — how often to check for updates (default: `30s`)
 - `--label-enable` — update only labeled containers
-- `--label-key` — label key to match
-- `--label-value` — label value to match
+- `--label` — label selector to match (key or key=value)
 - `--cleanup` — remove the old image after a successful update
 - `--docker-config` — path to `config.json` for registry authentication
-- `--rolling-label-key` — label key to enable rolling updates
-- `--rolling-label-value` — label value to enable rolling updates
+- `--rolling-label` — label selector to enable rolling updates (key or key=value)
 
 ---
 

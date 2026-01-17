@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -21,28 +22,49 @@ const appVersion = "0.1.0"
 func main() {
 	var cfg app.Config
 	var logLevelStr string
+	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	printUsage := func() {
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+		fs.SetOutput(io.Discard)
+	}
+	fs.Usage = func() {}
+	usageError := func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "❌ error: "+format+"\n", args...)
+		fmt.Fprintln(os.Stderr)
+		printUsage()
+		os.Exit(2)
+	}
 
-	flag.DurationVar(&cfg.Interval, "interval", 30*time.Second, "Check interval (e.g. 30s)")
-	flag.BoolVar(&cfg.Cleanup, "cleanup", false, "Remove old images for updated containers")
-	flag.BoolVar(&cfg.LabelEnable, "label-enable", false, "Update only containers that have label key=value")
+	fs.DurationVar(&cfg.Interval, "interval", 30*time.Second, "Check interval (e.g. 30s)")
+	fs.BoolVar(&cfg.Cleanup, "cleanup", false, "Remove old images for updated containers")
+	fs.BoolVar(&cfg.LabelEnable, "label-enable", false, "Update only containers that have label")
+	fs.StringVar(&cfg.Label, "label", "devem.tech/up-to-date.enabled=true", "Label selector for --label-enable (key or key=value)")
 
-	flag.StringVar(&cfg.LabelKey, "label-key", "devem.tech/up-to-date.enabled", "Label key to match (used with --label-enable)")
-	flag.StringVar(&cfg.LabelValue, "label-value", "true", "Label value to match (used with --label-enable)")
+	fs.StringVar(&cfg.DockerConfigPath, "docker-config", "", "Path to docker config.json for registry auth (optional)")
 
-	flag.StringVar(&cfg.DockerConfigPath, "docker-config", "/config.json", "Path to docker config.json for registry auth (optional)")
+	fs.StringVar(&cfg.RollingLabel, "rolling-label", "devem.tech/up-to-date.rolling=true", "Label selector to enable rolling updates (key or key=value)")
+	fs.StringVar(&logLevelStr, "log-level", "info", "Log level: debug, info, warn, error")
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		if err == flag.ErrHelp {
+			printUsage()
+			os.Exit(0)
+		}
+		usageError("%v", err)
+	}
 
-	flag.StringVar(&cfg.RollingLabelKey, "rolling-label-key", "devem.tech/up-to-date.rolling", "Label key to enable rolling updates for a container")
-	flag.StringVar(&cfg.RollingLabelValue, "rolling-label-value", "true", "Label value to enable rolling updates (used with --rolling-label-key)")
-	flag.StringVar(&logLevelStr, "log-level", "info", "Log level: debug, info, warn, error")
-	flag.Parse()
+	if cfg.Interval <= 0 {
+		usageError("interval must be positive")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	parsedLogLevel, err := app.ParseLogLevel(logLevelStr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "log level: %v\n", err)
-		os.Exit(2)
+		usageError("log level: %v", err)
 	}
 	cfg.LogLevel = parsedLogLevel
 	app.SetupLogging(cfg.LogLevel)
@@ -54,9 +76,12 @@ func main() {
 	}
 	defer cli.Close()
 
-	auths, err := dockerauth.Load(cfg.DockerConfigPath)
-	if err != nil {
-		slog.Warn("config", "error", err, "note", "continuing without registry auth")
+	var auths dockerauth.Index
+	if cfg.DockerConfigPath != "" {
+		auths, err = dockerauth.Load(cfg.DockerConfigPath)
+		if err != nil {
+			usageError("docker-config: %v", err)
+		}
 	}
 
 	slog.Info("up-to-date " + appVersion)
