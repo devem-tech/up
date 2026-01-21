@@ -50,23 +50,27 @@ func runOnce(ctx context.Context, cli *client.Client, auths dockerauth.Index, cf
 	scanned := len(containers)
 	updated := 0
 	failed := 0
-	updatedRefs := make([]containerRef, 0)
-	failedRefs := make([]containerRef, 0)
+	updatedRefs := make([]notifyRef, 0)
+	failedRefs := make([]notifyRef, 0)
 
 	logf(slog.LevelDebug, "scan: %d container(s) eligible", scanned)
 
 	for _, c := range containers {
 		ref := containerRefFromSummary(c)
-		wasUpdated, err := updateContainerIfNeeded(ctx, cli, auths, cfg, c)
+		wasUpdated, newImageID, err := updateContainerIfNeeded(ctx, cli, auths, cfg, c)
 		if err != nil {
 			logContainerf(slog.LevelError, ref, "update error: %v", err)
 			failed++
-			failedRefs = append(failedRefs, ref)
+			failedRefs = append(failedRefs, notifyRef{Name: ref.Name, Info: err.Error()})
 			continue
 		}
 		if wasUpdated {
 			updated++
-			updatedRefs = append(updatedRefs, ref)
+			info := shortID(newImageID)
+			if info == "" {
+				info = "unknown"
+			}
+			updatedRefs = append(updatedRefs, notifyRef{Name: ref.Name, Info: info})
 		}
 	}
 
@@ -88,7 +92,12 @@ func runOnce(ctx context.Context, cli *client.Client, auths dockerauth.Index, cf
 	}
 }
 
-func buildNotificationMessage(updatedRefs, failedRefs []containerRef) string {
+type notifyRef struct {
+	Name string
+	Info string
+}
+
+func buildNotificationMessage(updatedRefs, failedRefs []notifyRef) string {
 	var b strings.Builder
 	b.WriteString("<b>Up-to-date</b>")
 	if len(updatedRefs) > 0 {
@@ -105,12 +114,15 @@ func buildNotificationMessage(updatedRefs, failedRefs []containerRef) string {
 	return b.String()
 }
 
-func writeRefList(b *strings.Builder, refs []containerRef) {
+func writeRefList(b *strings.Builder, refs []notifyRef) {
 	for _, ref := range refs {
 		name := ref.Name
 		if name == "" {
 			name = "<noname>"
 		}
 		fmt.Fprintf(b, "\n• <code>%s</code>", html.EscapeString(name))
+		if ref.Info != "" {
+			fmt.Fprintf(b, " (%s)", html.EscapeString(strings.TrimSpace(ref.Info)))
+		}
 	}
 }

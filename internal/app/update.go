@@ -13,11 +13,11 @@ import (
 	"github.com/moby/moby/client"
 )
 
-func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dockerauth.Index, cfg Config, summary container.Summary) (bool, error) {
+func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dockerauth.Index, cfg Config, summary container.Summary) (bool, string, error) {
 	ref := containerRefFromSummary(summary)
 	ins, err := cli.ContainerInspect(ctx, summary.ID, client.ContainerInspectOptions{})
 	if err != nil {
-		return false, fmt.Errorf("inspect container: %w", err)
+		return false, "", fmt.Errorf("inspect container: %w", err)
 	}
 
 	cur := ins.Container
@@ -25,7 +25,7 @@ func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dock
 
 	imageRef := cur.Config.Image
 	if imageRef == "" {
-		return false, errors.New("container has empty Config.Image")
+		return false, "", errors.New("container has empty Config.Image")
 	}
 
 	oldImageID := cur.Image
@@ -39,29 +39,29 @@ func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dock
 
 	regAuth, _ := auths.RegistryAuthForImageRef(imageRef)
 	if err := pullImage(ctx, cli, imageRef, regAuth); err != nil {
-		return false, fmt.Errorf("pull %q: %w", imageRef, err)
+		return false, "", fmt.Errorf("pull %q: %w", imageRef, err)
 	}
 
 	newImg, err := cli.ImageInspect(ctx, imageRef)
 	if err != nil {
-		return false, fmt.Errorf("inspect pulled image %q: %w", imageRef, err)
+		return false, "", fmt.Errorf("inspect pulled image %q: %w", imageRef, err)
 	}
 	newImageID := newImg.ID
 
 	if newImageID == "" || oldImageID == "" || newImageID == oldImageID {
 		logContainerf(slog.LevelDebug, ref, "no update")
-		return false, nil
+		return false, "", nil
 	}
 
 	logContainerf(slog.LevelInfo, ref, "update available %s (%s)", imageRef, shortID(newImageID))
 
 	if supportsRollingUpdate(cur) && hasRollingLabel(cur, cfg.RollingLabel) {
 		if err := rollingUpdateContainer(ctx, cli, cur, imageRef); err != nil {
-			return false, fmt.Errorf("rolling update: %w", err)
+			return false, "", fmt.Errorf("rolling update: %w", err)
 		}
 	} else {
 		if err := recreateContainer(ctx, cli, cur, imageRef); err != nil {
-			return false, err
+			return false, "", err
 		}
 	}
 
@@ -78,7 +78,7 @@ func updateContainerIfNeeded(ctx context.Context, cli *client.Client, auths dock
 		logContainerf(slog.LevelDebug, ref, "cleanup disabled: keeping old image %s", shortID(oldImageID))
 	}
 
-	return true, nil
+	return true, newImageID, nil
 }
 
 func supportsRollingUpdate(cur container.InspectResponse) bool {
