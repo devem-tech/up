@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/avast/retry-go/v5"
 )
 
 type NotifyFunc func(ctx context.Context, msg string) error
@@ -44,20 +46,28 @@ func (n telegramNotifier) Notify(ctx context.Context, msg string) error {
 	form.Set("parse_mode", "HTML")
 
 	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", n.token)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	send := func() error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := n.client.Do(req)
-	if err != nil {
-		return err
+		resp, err := n.client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode/100 == 2 {
+			return nil
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("telegram status %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode/100 == 2 {
-		return nil
-	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	return fmt.Errorf("telegram status %s: %s", resp.Status, strings.TrimSpace(string(body)))
+
+	return retry.New(
+		retry.Attempts(3),
+		retry.Delay(300*time.Millisecond),
+		retry.Context(ctx),
+	).Do(send)
 }

@@ -3,6 +3,7 @@ module github.com/devem-tech/up-to-date
 go 1.25
 
 require (
+	github.com/avast/retry-go/v5 v5.0.0
 	github.com/moby/moby/api v1.52.0
 	github.com/moby/moby/client v0.2.1
 )

@@ -61,7 +61,9 @@ func runOnce(ctx context.Context, cli *client.Client, auths dockerauth.Index, cf
 		if err != nil {
 			logContainerf(slog.LevelError, ref, "update error: %v", err)
 			failed++
-			failedRefs = append(failedRefs, notifyRef{Name: ref.Name, Info: err.Error()})
+			if !isTransientError(err) {
+				failedRefs = append(failedRefs, notifyRef{Name: ref.Name, Info: err.Error()})
+			}
 			continue
 		}
 		if wasUpdated {
@@ -84,7 +86,7 @@ func runOnce(ctx context.Context, cli *client.Client, auths dockerauth.Index, cf
 		slog.Duration("duration", time.Since(start)),
 	)
 
-	if cfg.Notify != nil && (updated > 0 || failed > 0) {
+	if cfg.Notify != nil && (len(updatedRefs) > 0 || len(failedRefs) > 0) {
 		msg := buildNotificationMessage(updatedRefs, failedRefs)
 		if err := cfg.Notify(ctx, msg); err != nil {
 			logf(slog.LevelWarn, "telegram notify error: %v", err)
@@ -102,27 +104,36 @@ func buildNotificationMessage(updatedRefs, failedRefs []notifyRef) string {
 	b.WriteString("<b>Up-to-date</b>")
 	if len(updatedRefs) > 0 {
 		b.WriteString("\n\n✅ Updated:\n")
-		writeRefList(&b, updatedRefs)
+		writeRefList(&b, updatedRefs, false, false)
 	}
 	if len(failedRefs) > 0 {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
 		b.WriteString("❌ Failed:\n")
-		writeRefList(&b, failedRefs)
+		writeRefList(&b, failedRefs, true, true)
 	}
 	return b.String()
 }
 
-func writeRefList(b *strings.Builder, refs []notifyRef) {
-	for _, ref := range refs {
+func writeRefList(b *strings.Builder, refs []notifyRef, infoAsBlock, blankLineBetween bool) {
+	for i, ref := range refs {
+		if i > 0 && blankLineBetween {
+			b.WriteString("\n")
+		}
 		name := ref.Name
 		if name == "" {
 			name = "<noname>"
 		}
 		fmt.Fprintf(b, "\n• <code>%s</code>", html.EscapeString(name))
-		if ref.Info != "" {
-			fmt.Fprintf(b, " (%s)", html.EscapeString(strings.TrimSpace(ref.Info)))
+		if ref.Info == "" {
+			continue
+		}
+		info := html.EscapeString(strings.TrimSpace(ref.Info))
+		if infoAsBlock {
+			fmt.Fprintf(b, "\n<pre>%s</pre>", info)
+		} else {
+			fmt.Fprintf(b, " – <code>%s</code>", info)
 		}
 	}
 }
