@@ -24,6 +24,8 @@ func isTransientError(err error) bool {
 	switch {
 	case strings.Contains(msg, "timeout"):
 		return true
+	case strings.Contains(msg, "context deadline exceeded"):
+		return true
 	case strings.Contains(msg, "tls handshake"):
 		return true
 	case strings.Contains(msg, "connection refused"):
